@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RidePal</title>
+    <style>
+        body {
+        font-family: Arial, sans-serif;
+        background-color: rgb(255, 255, 255);
+        margin: 0;
+        padding: 20px;
+        text-align: center;
+        }
+        .button-container {
+        display: flex;
+        justify-content: center;
+        }
+        .button {
+        background-color: #333;
+        color: rgb(255, 255, 255);
+        padding: 15px 25px;
+        border-radius: 5px;
+        }
+        .alerts {
+        color: rgb(73, 73, 73);
+        font-weight: bold;
+        font-size: 30px;
+        margin-top: 5%;
+        }
+    </style>
+    </head>
+    <body>
+        <h3 id="test"></h3>
+        <div id="chartContainer" style="height: 300px; width: 100%;"></div>
+        <div class="button-container">
+            <div class="button" id="startstop">Start journey</div>
+        </div>
+        <div class="alerts">
+            <p id="acceleration">HARSH ACCELERATION!</p>
+            <br/>
+            <p id="braking">HARSH BRAKING!</p>
+        </div>
+        <div>
+            <p id="journeysummary"></p>
+        </div>
+    </body>
+</html>
+<script src="https://cdn.canvasjs.com/canvasjs.min.js"></script>
+<script>
+const buttons = {
+    braking: document.getElementById("braking"),
+    acceleration: document.getElementById("acceleration")
+}
+const startstop = document.getElementById("startstop")
+const summary = document.getElementById("journeysummary")
+const x = document.getElementById("test")
+const options = {
+    enableHighAccuracy: true
+}
+
+function getPos() {
+    const promise = new Promise((res, rej) => {
+        navigator.geolocation.getCurrentPosition((position, undefined, options) => {
+            res(position)
+        })
+    })
+    return promise
+}
+
+let lastSpeed = null
+
+const thresholds = {
+    braking: {
+        value: -.3,
+        lower: true,
+        cooldown: 0
+    },
+    acceleration: {
+        value: .3,
+        lower: false,
+        cooldown: 0
+    }
+}
+
+let starttime = 0
+let clickidx = 0
+let incidents = []
+const points = {
+    speed: [],
+    acceleration: []
+}
+
+const chartInfo = {
+    title: {
+        text: "Acceleration and speed over time"
+    },
+        axisY :{
+        includeZero: false,
+    },
+        toolTip: {
+        shared: true
+    },
+        legend: {
+        fontSize: 13
+    },
+        data: [{
+        type: "splineArea",
+        showInLegend: true,
+        name: "Speed",
+        dataPoints: points.speed
+    },
+    {
+        type: "splineArea",
+        showInLegend: true,
+        name: "Acceleration",
+        dataPoints: points.acceleration
+    }]
+}
+
+const chart = new CanvasJS.Chart("chartContainer", chartInfo)
+
+function posLoop(idx) {
+    getPos().then((pos) => {
+        if (clickidx != idx) {
+            return
+        }
+        const coords = pos.coords
+        if (!lastSpeed) {
+            lastSpeed = coords.speed
+        }
+        const acceleration = coords.speed - lastSpeed
+
+        points.speed.push({x: points.length, y: coords.speed})
+        points.acceleration.push({x: points.length, y: acceleration})
+        chart.render()
+        
+        x.innerHTML = `longitude: ${coords.longitude} latitude: ${coords.latitude} speed: ${coords.speed}\nacceleration: ${acceleration} m/s`
+
+        for (let thresholdtype in thresholds) {
+            const threshold = thresholds[thresholdtype]
+            if ((threshold.lower ? acceleration < threshold.value : acceleration > threshold.value) && pos.timestamp - threshold.cooldown > 30000) {
+                const incident = {
+                    type: thresholdtype,
+                    coords: pos.coords,
+                    timestamp: pos.timestamp,
+                    location: "unknown"
+                }
+                const request = new XMLHttpRequest();
+                request.onreadystatechange = () => { 
+                    if (request.readyState == 4 && request.status == 200) {
+                        incident.location = JSON.parse(request.responseText).display_name
+                    }
+                }
+                request.open("GET", `https://geocode.maps.co/reverse?lat=${coords.latitude}&lon=${coords.longitude}&api_key=`, true)
+                request.send(null)
+                buttons[thresholdtype].style.color = "rgb(255, 0, 0)"
+                setTimeout(() => {
+                    buttons[thresholdtype].style.color = "rgb(73, 73, 73)"
+                }, 3000)
+                incidents.push(incident)
+            }
+        }
+        
+        lastSpeed = coords.speed
+        setTimeout(posLoop, 1000, idx)
+    })
+}
+
+function clamp(num, min, max) {
+    return num > max ? max : (num < min ? min : num)
+}
+
+startstop.addEventListener("click", () => {
+    clickidx++
+    const started = clickidx % 2 == 1
+    startstop.innerHTML = started ? "End journey" : "Start journey"
+    if (started) {
+        incidents = []
+        points.acceleration = []
+        points.speed = []
+        chartInfo.data[0].dataPoints = points.speed
+        chartInfo.data[1].dataPoints = points.acceleration
+        starttime = Date.now()
+        posLoop(clickidx)
+    } else {
+        const maxscore = (Date.now() - starttime) / 30000
+        const score = clamp(((maxscore - incidents.length) / maxscore) * 100, 0, 100)
+        let journeysummary = ""
+        for (let incident of incidents) {
+            const date = new Date(0)
+            date.setUTCMilliseconds(incident.timestamp)
+            journeysummary += `Harsh ${incident.type} at ${incident.location} (${date.getHours()}:${date.getMinutes()})<br/>`
+        }
+        journeysummary += `\nYour score: ${score}`
+        summary.innerHTML = journeysummary
+    }
+})
+</script>
